@@ -42,6 +42,11 @@
   .temp-red { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   #temp { font-size: 44px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; color: var(--plava); }
   .temp-opis { text-align: right; font-size: 13px; color: #666; line-height: 1.35; }
+  .zadata-dugme { font-size: 14px; font-weight: 700; text-decoration: underline; padding: 2px 0; }
+  .zadata-red { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .zadata-red .dugme { width: 56px; min-height: 48px; font-size: 26px; background: var(--plava); }
+  #zVrednost { width: 110px; font-size: 26px; font-weight: 700; text-align: center; padding: 6px;
+    border: 1px solid #ccd; border-radius: 10px; }
   #rezim { font-size: 15px; font-weight: 700; margin-top: 6px; }
   .releji { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 6px; }
   .relej { border-radius: 8px; padding: 4px 2px; text-align: center; font-size: 12px; font-weight: 700;
@@ -117,7 +122,7 @@
   <div class="kartica">
     <div class="temp-red">
       <div id="temp">--,- °C</div>
-      <div class="temp-opis"><div id="tempStanje">čekam merenje</div><div id="zadata">zadato --</div></div>
+      <div class="temp-opis"><div id="tempStanje">čekam merenje</div><button type="button" id="zadata" class="link zadata-dugme">zadato --</button></div>
     </div>
     <div id="rezim">Regulacija: čekam podatak</div>
     <div class="releji">
@@ -156,6 +161,22 @@
     </div>
   </div>
 
+  <div class="prozor" id="prozorZadata">
+    <div class="okvir">
+      <h3>Zadata temperatura</h3>
+      <div style="font-size:13px;color:#666">Grejači se uključuju 0,5 °C ispod zadate, a isključuju na zadatoj.
+        Temperatura je na istoj skali kao u aplikaciji.</div>
+      <div class="zadata-red">
+        <button type="button" class="dugme" id="zManje">−</button>
+        <input type="number" id="zVrednost" step="0.5" min="20" max="110" inputmode="decimal">
+        <span style="font-size:20px">°C</span>
+        <button type="button" class="dugme" id="zVise">+</button>
+      </div>
+      <button type="button" class="dugme" id="zSacuvaj" style="background:var(--zelena);min-height:44px;font-size:17px">Sačuvaj</button>
+      <button type="button" class="link" id="zZatvori">Zatvori</button>
+    </div>
+  </div>
+
   <div class="prozor" id="prozorNedelja">
     <div class="okvir">
       <h3>Nedeljni raspored</h3>
@@ -170,6 +191,7 @@
   var esp = null, veza = "povezujem", kada = null, kadaRucno = null, kadaRezim = null, espSat = null;
   var blokada = null, rezim = null, zadata = null, stanje = {};
   var zeljeno = null, zeljenoOd = 0;   // poslata komanda za kadu koju ESP još nije potvrdio
+  var poslataZadata = null, poslataZadataOd = 0;   // poslata zadata koju ESP još nije potvrdio
   var temp = null, tempStanje = null, tempKada = null;
 
   function zarez(v) { return v.toFixed(1).replace(".", ","); }
@@ -193,6 +215,7 @@
 
     el("rezim").textContent = rezim ? rezim : "Regulacija: čekam podatak";
     el("zadata").textContent = zadata !== null ? "zadato " + zarez(zadata) + " °C" : "zadato --";
+    if (poslataZadata !== null) el("zadata").textContent = "zadato " + zarez(poslataZadata) + " °C, šalje se...";
     [1, 2, 3, 4].forEach(function (k) { el("r" + k).className = "relej" + (stanje[k] === "1" ? " on" : ""); });
 
     // dugme pokazuje poslednju poslatu komandu odmah, ne čeka ESP, pa se odmah može pritisnuti ponovo
@@ -380,7 +403,15 @@
     else if (tema === "raspored/greska") { javi("ESP je odbio raspored: " + poruka); return; }
     else if (tema === "blokada") blokada = poruka;
     else if (tema === "reg/rezim") rezim = poruka;
-    else if (tema === "reg/zadata") { b = parseFloat(poruka); zadata = isFinite(b) ? b : null; }
+    else if (tema === "reg/zadata") {
+      b = parseFloat(poruka);
+      zadata = isFinite(b) ? b : null;
+      if (poslataZadata !== null && zadata !== null && Math.abs(zadata - poslataZadata) < 0.05) {
+        poslataZadata = null;
+        javi("ESP je prihvatio zadatu temperaturu " + zarez(zadata) + " °C");
+      }
+    }
+    else if (tema === "zadata/greska") { poslataZadata = null; javi("ESP je odbio zadatu: " + poruka); }
     else if (tema === "status") {
       if (poruka === "online" && esp !== "online" && zeljeno !== null) PK700.objavi("kada/set", zeljeno);   // ESP se vratio
       esp = poruka;
@@ -411,7 +442,33 @@
       javi("ESP nije potvrdio komandu za 90 s, proveri vezu");
       prikazi();
     }
+    if (poslataZadata !== null && performance.now() - poslataZadataOd > 90000) {
+      poslataZadata = null;
+      javi("ESP nije potvrdio zadatu temperaturu za 90 s, proveri vezu i verziju programa na ESP-u");
+      prikazi();
+    }
   }, 2000);
+  // ---- zadata temperatura ----
+  function zadataIzPolja() { var v = parseFloat(String(el("zVrednost").value).replace(",", ".")); return isFinite(v) ? v : null; }
+  function postaviPolje(v) { el("zVrednost").value = (Math.round(Math.min(110, Math.max(20, v)) * 2) / 2).toFixed(1); }
+  el("zadata").addEventListener("click", function () {
+    postaviPolje(poslataZadata !== null ? poslataZadata : (zadata !== null ? zadata : 97));
+    otvori("prozorZadata");
+  });
+  el("zManje").addEventListener("click", function () { postaviPolje((zadataIzPolja() || 97) - 0.5); });
+  el("zVise").addEventListener("click", function () { postaviPolje((zadataIzPolja() || 97) + 0.5); });
+  el("zZatvori").addEventListener("click", function () { zatvori("prozorZadata"); });
+  el("zSacuvaj").addEventListener("click", function () {
+    var v = zadataIzPolja();
+    if (v === null || v < 20 || v > 110) { javi("Zadata mora biti od 20 do 110 °C"); return; }
+    v = Math.round(v * 10) / 10;
+    if (!PK700.objavi("zadata/set", v.toFixed(1))) { javi("Nema veze sa serverom"); return; }
+    poslataZadata = v;
+    poslataZadataOd = performance.now();
+    zatvori("prozorZadata");
+    prikazi();
+  });
+
   el("vratiRaspored").addEventListener("click", function () {
     if (!PK700.objavi("kada/set", "auto")) javi("Nema veze sa serverom");
   });

@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#1f5fb5">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>PK700 kada</title>
+<!--
+  Veb aplikacija PK700, otvara se preko linka u pregledaču telefona, bez instalacije.
+  Stranica se sama povezuje na privatni MQTT server EMQX preko WebSocket-a (TLS, port 8084)
+  i traži prijavu nalogom za telefon. Lozinka nije u stranici, pa bez nje niko ne vidi ni ne menja ništa.
+  Stranica šalje:
+    "uzivo" = "1" na 20 s dok je otvorena, pa ESP tada svake 2 s šalje temperaturu za grafik
+    "kada/set" = "1", "0" ili "auto"  ručno uključenje ili isključenje do sledeće promene po rasporedu,
+                                       ili povratak na raspored
+    "raspored/set" = raspored rada, kao zadržana poruka, pa ga ESP dobije i ako je trenutno van mreže
+  Format rasporeda je opisan u programu ESP-a (kada_raspored.ino).
+-->
+<style>
+  :root { --zelena: #2e7d32; --crvena: #c62828; --siva: #757575; --narandzasta: #ef6c00; --plava: #1f5fb5; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f5f7; color: #1b1b1b;
+    display: flex; flex-direction: column; padding: 14px 16px; gap: 10px; min-height: 100vh;
+  }
+  .sat { text-align: center; }
+  #vreme { font-size: 38px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+  #datum { font-size: 15px; color: #444; }
+  .stanja { display: flex; flex-direction: column; gap: 2px; }
+  .linija { font-size: 18px; font-weight: 700; }
+  .mali { font-size: 15px; color: #444; }
+  .kartica { background: #fff; border-radius: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.12); padding: 12px 14px; }
+  .naziv { font-size: 17px; font-weight: 600; color: #444; }
+  .temp-red { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  #temp { font-size: 52px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--plava); }
+  #tempStanje { font-size: 14px; color: #666; text-align: right; }
+  #grafik { width: 100%; height: 150px; display: block; margin-top: 6px; }
+  .osa { display: flex; justify-content: space-between; font-size: 12px; color: #777; padding-left: 38px; }
+  #rezim { font-size: 17px; font-weight: 700; }
+  .releji { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+  .relej { border-radius: 10px; padding: 6px 2px; text-align: center; font-size: 13px; font-weight: 600;
+    background: #e3e5e8; color: #555; }
+  .relej.on { background: var(--zelena); color: #fff; }
+  .dugme { border: 0; border-radius: 20px; min-height: 64px; width: 100%; color: #fff; font-size: 24px; font-weight: 700;
+    background: var(--siva); -webkit-tap-highlight-color: transparent; transition: filter .1s; }
+  .dugme:active { filter: brightness(.85); }
+  .dugme.malo { min-height: 44px; font-size: 17px; border-radius: 14px; }
+  #kadaRezim { font-size: 16px; font-weight: 600; text-align: center; margin-top: 6px; }
+  #espSat { font-size: 13px; color: #666; text-align: center; margin-top: 2px; }
+  #vratiRaspored { margin-top: 8px; background: var(--plava); }
+  #blokada { color: var(--narandzasta); font-weight: 600; text-align: center; }
+  #poruka { font-size: 15px; color: var(--crvena); text-align: center; }
+  #blokada:empty, #poruka:empty { display: none; }
+  h2 { font-size: 18px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 12px 0 6px; color: #444; }
+  .nedelja { display: grid; grid-template-columns: auto 1fr auto auto; gap: 6px 8px; align-items: center; font-size: 15px; }
+  .nedelja input[type=time], .urednik input[type=time] { font-size: 15px; padding: 4px; border: 1px solid #ccd; border-radius: 8px; }
+  input[type=checkbox] { width: 22px; height: 22px; }
+  .kalendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .kalendar .zaglavlje { font-size: 12px; color: #666; text-align: center; font-weight: 600; }
+  .dan { border: 0; border-radius: 10px; padding: 4px 0; min-height: 50px; background: #eceef1; color: #555;
+    font-size: 15px; font-weight: 700; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .dan small { font-size: 10px; font-weight: 500; }
+  .dan.radi { background: #d7ecd8; color: #1b5e20; }
+  .dan.izuzetak { outline: 2px solid var(--narandzasta); outline-offset: -2px; }
+  .dan.danas { box-shadow: inset 0 0 0 2px var(--plava); }
+  .dan.proslo { opacity: .4; }
+  .dan.izabran { background: var(--plava); color: #fff; }
+  .urednik { margin-top: 10px; padding: 10px; border-radius: 14px; background: #f2f4f7; display: none; }
+  .urednik .red { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  .dugmici { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .legenda { font-size: 12px; color: #666; margin-top: 6px; }
+  #rasporedStanje { font-size: 14px; font-weight: 600; margin: 4px 0 8px; }
+  .dno { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #666; margin-top: auto; }
+  .dno button { border: 0; background: none; color: var(--plava); font-size: 15px; padding: 6px 0; }
+  #prijava { position: fixed; inset: 0; background: #f4f5f7; z-index: 10; display: flex; align-items: center;
+    justify-content: center; padding: 20px; }
+  #prijava form { width: 100%; max-width: 360px; background: #fff; border-radius: 20px; padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12); display: flex; flex-direction: column; gap: 10px; }
+  #prijava h1 { font-size: 22px; margin: 0 0 4px; }
+  #prijava label { font-size: 15px; color: #444; }
+  #prijava input[type=text], #prijava input[type=password] { width: 100%; font-size: 17px; padding: 10px;
+    border: 1px solid #ccd; border-radius: 10px; margin-top: 4px; }
+  #prijavaPoruka { color: var(--crvena); font-size: 15px; min-height: 18px; }
+  .skriveno { display: none !important; }
+</style>
+</head>
+<body>
+  <div id="prijava">
+    <form id="prijavaForma" autocomplete="on">
+      <h1>PK700 kada</h1>
+      <div class="mali">Prijava nalogom za telefon sa MQTT servera.</div>
+      <label>Korisničko ime<input type="text" id="pKorisnik" name="username" autocomplete="username" autocapitalize="none" required></label>
+      <label>Lozinka<input type="password" id="pLozinka" name="password" autocomplete="current-password" required></label>
+      <label><input type="checkbox" id="pZapamti" checked> Zapamti na ovom telefonu</label>
+      <div id="prijavaPoruka"></div>
+      <button type="submit" class="dugme malo" style="background:var(--plava)">Prijavi se</button>
+    </form>
+  </div>
+  <div class="sat">
+    <div id="vreme">--:--:--</div>
+    <div id="datum">čekam vreme sa interneta</div>
+  </div>
+  <div class="stanja">
+    <div id="server" class="linija">Server: povezujem se...</div>
+    <div id="esp" class="linija">ESP: nepoznato</div>
+    <div id="internet" class="mali">Internet sistema: čekam podatak</div>
+  </div>
+  <div class="kartica">
+    <div class="temp-red">
+      <div>
+        <div class="naziv">Temperatura vode</div>
+        <div id="temp">--,- °C</div>
+      </div>
+      <div id="tempStanje">čekam merenje</div>
+    </div>
+    <svg id="grafik" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="osa"><span>pre 2 min</span><span>pre 1 min</span><span>sada</span></div>
+  </div>
+  <div class="kartica">
+    <div id="rezim">Regulacija: čekam podatak</div>
+    <div id="zadata" class="mali">Zadata temperatura: čekam podatak</div>
+    <div class="releji">
+      <div class="relej" id="r4">Pumpa</div>
+      <div class="relej" id="r1">Grejač 1</div>
+      <div class="relej" id="r2">Grejač 2</div>
+      <div class="relej" id="r3">Grejač 3</div>
+    </div>
+  </div>
+  <div>
+    <button id="kada" type="button" class="dugme">Čekam stanje kade</button>
+    <div id="kadaRezim"></div>
+    <div id="espSat"></div>
+    <button id="vratiRaspored" type="button" class="dugme malo" style="display:none">Vrati na raspored</button>
+  </div>
+  <div id="blokada" class="mali"></div>
+  <div id="poruka"></div>
+
+  <div class="kartica">
+    <h2>Raspored rada</h2>
+    <div id="rasporedStanje">Čekam raspored sa ESP-a</div>
+    <h3>Nedeljni raspored</h3>
+    <div class="nedelja" id="nedelja"></div>
+    <h3>Kalendar, dodirni dan za izmenu</h3>
+    <div class="kalendar" id="kalendar"></div>
+    <div class="legenda">Zeleno radi, sivo ne radi, narandžast okvir je izmena za taj dan.</div>
+    <div class="urednik" id="urednik">
+      <div id="urednikNaslov" style="font-weight:700"></div>
+      <div class="red"><label><input type="checkbox" id="uRadi"> Kada radi</label></div>
+      <div class="red">od <input type="time" id="uOd"> do <input type="time" id="uDo"></div>
+      <div class="dugmici">
+        <button type="button" class="dugme malo" id="uPrimeni" style="background:var(--zelena)">Primeni na dan</button>
+        <button type="button" class="dugme malo" id="uNedeljni" style="background:var(--siva)">Kao nedeljni</button>
+      </div>
+    </div>
+    <div class="dugmici">
+      <button type="button" class="dugme malo" id="sacuvajRaspored" style="background:var(--plava)">Sačuvaj raspored</button>
+      <button type="button" class="dugme malo" id="ponistiRaspored" style="background:var(--siva)">Poništi izmene</button>
+    </div>
+  </div>
+
+  <div class="dno">
+    <span>Veb aplikacija v1, 11. 11. 2026.</span>
+    <button id="podesavanja" type="button">Odjavi se</button>
+  </div>
+
+<script>
+  var esp = null, veza = "povezujem", kada = null, kadaRucno = null, kadaRezim = null, espSat = null;
+  var blokada = null, rezim = null, zadata = null;
+  var temp = null, tempStanje = null, tempKada = null;   // tempKada je performance.now() poslednjeg merenja
+  var stanje = {};                                        // stanje releja CH1 do CH4, samo za prikaz
+  var tacke = [], PROZOR = 120000, uzivoKada = 0;         // grafik: {t: performance.now(), v: °C ili null}
+  var el = function (id) { return document.getElementById(id); };
+
+  function boji(e, tekst, boja) { e.textContent = tekst; e.style.color = boja; }
+  function zarez(v) { return v.toFixed(1).replace(".", ","); }
+
+  function javi(tekst) {
+    el("poruka").textContent = tekst;
+    clearTimeout(javi.t);
+    javi.t = setTimeout(function () { el("poruka").textContent = ""; }, 4000);
+  }
+
+  function prikazi() {
+    if (veza === "povezan") boji(el("server"), "Server: povezan", "var(--zelena)");
+    else if (veza === "greska") boji(el("server"), "Server: greška, ponovo za 5 s", "var(--crvena)");
+    else boji(el("server"), "Server: povezujem se...", "var(--narandzasta)");
+
+    if (esp === "online") boji(el("esp"), "ESP: na mreži", "var(--zelena)");
+    else if (esp === "offline") boji(el("esp"), "ESP: van mreže, kada radi po rasporedu iz ESP-a", "var(--crvena)");
+    else boji(el("esp"), "ESP: nepoznato", "var(--siva)");
+
+    el("rezim").textContent = rezim ? "Regulacija: " + rezim : "Regulacija: čekam podatak";
+    el("zadata").textContent = zadata !== null ? "Zadata temperatura: " + zarez(zadata) + " °C (ključanje)"
+      : "Zadata temperatura: čekam podatak";
+    [1, 2, 3, 4].forEach(function (k) { el("r" + k).className = "relej" + (stanje[k] === "1" ? " on" : ""); });
+
+    var d = el("kada");
+    if (kada === "1") { d.textContent = "Isključi kadu"; d.style.background = "var(--crvena)"; }
+    else if (kada === "0") { d.textContent = "Uključi kadu"; d.style.background = "var(--zelena)"; }
+    else { d.textContent = "Čekam stanje kade"; d.style.background = "var(--siva)"; }
+    el("kadaRezim").textContent = kadaRezim || "";
+    el("espSat").textContent = espSat ? (espSat === "nema" ? "ESP nema tačno vreme, proveri bateriju sata na ploči"
+      : "Sat ESP-a: " + espSat) : "";
+    el("vratiRaspored").style.display = kadaRucno === "1" || kadaRucno === "0" ? "block" : "none";
+    el("blokada").textContent = blokada === "1" ? "Blokada posle uključivanja ESP-a, releji se uključuju posle 10 s" : "";
+
+    prikaziTemp();
+  }
+
+  function prikaziTemp() {
+    var ok = tempStanje === "ok" && temp !== null && isFinite(temp);
+    el("temp").textContent = ok ? zarez(temp) + " °C" : "--,- °C";
+    el("temp").style.color = ok ? "var(--plava)" : "var(--siva)";
+    if (tempStanje === null) el("tempStanje").textContent = "čekam merenje";
+    else if (!ok) el("tempStanje").textContent = tempStanje === "greska sonde" ? "greška sonde" : tempStanje;
+    else if (tempKada === null) el("tempStanje").textContent = "poslednja vrednost sa servera";
+    else {
+      var s = Math.round((performance.now() - tempKada) / 1000);
+      el("tempStanje").textContent = s < 4 ? "upravo izmereno" : "izmereno pre " + s + " s";
+    }
+  }
+
+  // ---- grafik poslednja 2 min ----
+  function dodajTacku(v) { tacke.push({ t: performance.now(), v: v }); }
+
+  function crtaj() {
+    var svg = el("grafik"), w = svg.clientWidth || 320, h = 150, L = 38, R = 6, T = 8, B = 8;
+    var sada = performance.now(), od = sada - PROZOR;
+    while (tacke.length && tacke[0].t < od - 5000) tacke.shift();
+    var vr = [];
+    tacke.forEach(function (p) { if (p.v !== null && p.t >= od) vr.push(p.v); });
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    var s = "";
+    if (!vr.length) {
+      svg.innerHTML = '<text x="' + (w / 2) + '" y="' + (h / 2) + '" text-anchor="middle" font-size="14" fill="#888">'
+        + "nema merenja za grafik</text>";
+      return;
+    }
+    var min = Math.min.apply(null, vr), max = Math.max.apply(null, vr);
+    if (max - min < 2) { var c = (max + min) / 2; min = c - 1; max = c + 1; }
+    else { var r = (max - min) * 0.1; min -= r; max += r; }
+    var y = function (v) { return T + (max - v) / (max - min) * (h - T - B); };
+    var x = function (t) { return L + (1 - (sada - t) / PROZOR) * (w - L - R); };
+    [max, (max + min) / 2, min].forEach(function (v) {
+      var yy = y(v).toFixed(1);
+      s += '<line x1="' + L + '" x2="' + (w - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="#e2e4e8"/>';
+      s += '<text x="' + (L - 4) + '" y="' + yy + '" dy="4" text-anchor="end" font-size="11" fill="#777">' + zarez(v) + "</text>";
+    });
+    var xm = x(sada - PROZOR / 2).toFixed(1);
+    s += '<line x1="' + xm + '" x2="' + xm + '" y1="' + T + '" y2="' + (h - B) + '" stroke="#eef0f2"/>';
+    if (zadata !== null && zadata >= min && zadata <= max) {
+      var yz = y(zadata).toFixed(1);
+      s += '<line x1="' + L + '" x2="' + (w - R) + '" y1="' + yz + '" y2="' + yz + '" stroke="#c62828" stroke-dasharray="5 4"/>';
+    }
+    var deo = [];
+    var zavrsi = function () {
+      if (deo.length > 1) s += '<polyline fill="none" stroke="#1f5fb5" stroke-width="2.2" stroke-linejoin="round" points="'
+        + deo.join(" ") + '"/>';
+      else if (deo.length === 1) { var q = deo[0].split(","); s += '<circle cx="' + q[0] + '" cy="' + q[1] + '" r="2.5" fill="#1f5fb5"/>'; }
+      deo = [];
+    };
+    tacke.forEach(function (p) {
+      if (p.t < od) return;
+      if (p.v === null) { zavrsi(); return; }
+      deo.push(x(p.t).toFixed(1) + "," + y(p.v).toFixed(1));
+    });
+    zavrsi();
+    svg.innerHTML = s;
+  }
+
+  function primiIstoriju(poruka) {
+    var d = poruka.split(" "), korak = parseFloat(d[0]) * 1000, vr = (d[1] || "").split(",");
+    if (!isFinite(korak) || !d[1]) return;
+    var sada = performance.now(), n = vr.length;
+    tacke = vr.map(function (v, i) { var b = parseFloat(v); return { t: sada - (n - 1 - i) * korak, v: isFinite(b) ? b : null }; });
+    crtaj();
+  }
+
+  // dok je stranica otvorena, ESP svake 2 s šalje temperaturu
+  function javiUzivo() { if (window.PK700 && !document.hidden && veza === "povezan") PK700.objavi("uzivo", "1"); }
+
+  // ---- raspored rada ----
+  var DANI_PUNO = ["Ponedeljak", "Utorak", "Sreda", "Četvrtak", "Petak", "Subota", "Nedelja"];
+  var DANI_KRATKO = ["Pon", "Uto", "Sre", "Čet", "Pet", "Sub", "Ned"];
+  var rasporedEsp = null, nacrt = null, izmenjeno = false, poslatId = null, poslatTekst = null, izabran = null;
+
+  function dd(n) { return (n < 10 ? "0" : "") + n; }
+  function kopija(r) { return JSON.parse(JSON.stringify(r)); }
+
+  function parsirajRaspored(t) {
+    var r = { id: "", n: [], i: {} };
+    t.split("|").forEach(function (deo) {
+      if (deo.indexOf("id=") === 0) r.id = deo.slice(3);
+      else if (deo.indexOf("n=") === 0) deo.slice(2).split(";").forEach(function (e) {
+        var p = e.split(","); if (p.length === 3) r.n.push({ r: p[0] === "1", od: p[1], do: p[2] });
+      });
+      else if (deo.indexOf("i=") === 0 && deo.length > 2) deo.slice(2).split(";").forEach(function (e) {
+        var p = e.split(","); if (p.length === 4) r.i[p[0]] = { r: p[1] === "1", od: p[2], do: p[3] };
+      });
+    });
+    return r.n.length === 7 ? r : null;
+  }
+
+  // danas po vremenu sa interneta (beogradsko), a dok ono ne stigne po satu telefona
+  function danasUTC() {
+    var d = satBaza !== null ? new Date(satBaza + performance.now() - satT0) : new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+  function datumTekst(ms) { var d = new Date(ms); return d.getUTCFullYear() + "-" + dd(d.getUTCMonth() + 1) + "-" + dd(d.getUTCDate()); }
+  function danUNedelji(ms) { return (new Date(ms).getUTCDay() + 6) % 7; }   // 0 je ponedeljak
+  function danZa(r, ms) { var k = datumTekst(ms); return r.i[k] || r.n[danUNedelji(ms)]; }
+
+  function rasporedUTekst(r) {
+    var danas = datumTekst(danasUTC());
+    var t = "id=" + r.id + "|n=" + r.n.map(function (x) { return (x.r ? 1 : 0) + "," + x.od + "," + x.do; }).join(";") + "|i=";
+    var kljucevi = Object.keys(r.i).filter(function (k) { return k >= danas; }).sort().slice(0, 60);
+    return t + kljucevi.map(function (k) { var x = r.i[k]; return k + "," + (x.r ? 1 : 0) + "," + x.od + "," + x.do; }).join(";");
+  }
+
+  function prikaziRaspored() {
+    var st = el("rasporedStanje");
+    if (!nacrt) { st.textContent = "Čekam raspored sa ESP-a"; st.style.color = "var(--siva)"; }
+    else if (poslatId && (!rasporedEsp || rasporedEsp.id !== poslatId)) { st.textContent = "Šaljem raspored ESP-u, čekam potvrdu..."; st.style.color = "var(--narandzasta)"; }
+    else if (izmenjeno) { st.textContent = "Izmene nisu sačuvane"; st.style.color = "var(--narandzasta)"; }
+    else { st.textContent = "ESP ima ovaj raspored" + (rasporedEsp && rasporedEsp.id === "podrazumevani" ? " (početni: radnim danima 5 do 15 h)" : ""); st.style.color = "var(--zelena)"; }
+    if (!nacrt) return;
+
+    var ned = el("nedelja"), s = "";
+    nacrt.n.forEach(function (x, i) {
+      s += '<input type="checkbox" data-i="' + i + '" class="nRadi"' + (x.r ? " checked" : "") + '>'
+        + "<span>" + DANI_PUNO[i] + "</span>"
+        + '<input type="time" data-i="' + i + '" class="nOd" value="' + x.od + '">'
+        + '<input type="time" data-i="' + i + '" class="nDo" value="' + x.do + '">';
+    });
+    if (!ned.contains(document.activeElement)) ned.innerHTML = s;   // ne prekidati unos koji je u toku
+
+    var kal = el("kalendar"), danas = danasUTC(), pon = danas - danUNedelji(danas) * 86400000, h = "";
+    DANI_KRATKO.forEach(function (d) { h += '<div class="zaglavlje">' + d + "</div>"; });
+    for (var k = 0; k < 35; k++) {
+      var ms = pon + k * 86400000, kljuc = datumTekst(ms), x = danZa(nacrt, ms), d = new Date(ms);
+      var klase = "dan" + (x.r ? " radi" : "") + (nacrt.i[kljuc] ? " izuzetak" : "") + (ms === danas ? " danas" : "")
+        + (ms < danas ? " proslo" : "") + (izabran === kljuc ? " izabran" : "");
+      h += '<button type="button" class="' + klase + '" data-d="' + kljuc + '"' + (ms < danas ? " disabled" : "") + ">"
+        + d.getUTCDate() + "<small>" + (x.r ? x.od.slice(0, 5) + "–" + x.do.slice(0, 5) : "ne radi") + "</small></button>";
+    }
+    kal.innerHTML = h;
+  }
+
+  function promenaNedelje(e) {
+    var t = e.target, i = +t.getAttribute("data-i");
+    if (!nacrt || isNaN(i)) return;
+    if (t.classList.contains("nRadi")) nacrt.n[i].r = t.checked;
+    else if (t.classList.contains("nOd") && t.value) nacrt.n[i].od = t.value;
+    else if (t.classList.contains("nDo") && t.value) nacrt.n[i].do = t.value;
+    izmenjeno = true;
+    prikaziRaspored();
+  }
+  el("nedelja").addEventListener("change", promenaNedelje);
+
+  el("kalendar").addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-d]");
+    if (!b || b.disabled || !nacrt) return;
+    izabran = b.getAttribute("data-d");
+    var p = izabran.split("-"), ms = Date.UTC(+p[0], +p[1] - 1, +p[2]), x = danZa(nacrt, ms);
+    el("urednikNaslov").textContent = DANI_PUNO[danUNedelji(ms)] + ", " + (+p[2]) + ". " + (+p[1]) + ". " + p[0] + "."
+      + (nacrt.i[izabran] ? " (izmena)" : " (kao nedeljni)");
+    el("uRadi").checked = x.r; el("uOd").value = x.od; el("uDo").value = x.do;
+    el("urednik").style.display = "block";
+    prikaziRaspored();
+  });
+
+  el("uPrimeni").addEventListener("click", function () {
+    if (!izabran || !nacrt) return;
+    var od = el("uOd").value, d = el("uDo").value;
+    if (el("uRadi").checked && (!od || !d || od >= d)) { javi("Početak mora biti pre kraja"); return; }
+    nacrt.i[izabran] = { r: el("uRadi").checked, od: od || "05:00", do: d || "15:00" };
+    izmenjeno = true; izabran = null; el("urednik").style.display = "none";
+    prikaziRaspored();
+  });
+  el("uNedeljni").addEventListener("click", function () {
+    if (!izabran || !nacrt) return;
+    delete nacrt.i[izabran];
+    izmenjeno = true; izabran = null; el("urednik").style.display = "none";
+    prikaziRaspored();
+  });
+
+  function posaljiRaspored() {
+    if (!poslatTekst || !window.PK700 || veza !== "povezan") return;
+    PK700.objavi("raspored/set", poslatTekst, true);   // zadržana, pa je ESP dobije i kad se kasnije poveže
+  }
+
+  el("sacuvajRaspored").addEventListener("click", function () {
+    if (!nacrt) return;
+    for (var i = 0; i < 7; i++) if (nacrt.n[i].r && nacrt.n[i].od >= nacrt.n[i].do) {
+      javi(DANI_PUNO[i] + ": početak mora biti pre kraja"); return;
+    }
+    var d = satBaza !== null ? new Date(satBaza + performance.now() - satT0) : new Date();
+    nacrt.id = datumTekst(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())) + " "
+      + dd(d.getUTCHours()) + ":" + dd(d.getUTCMinutes()) + ":" + dd(d.getUTCSeconds());
+    poslatId = nacrt.id;
+    poslatTekst = rasporedUTekst(nacrt);
+    izmenjeno = false;
+    if (veza !== "povezan") javi("Nema veze sa serverom, raspored će biti poslat kad se veza uspostavi");
+    posaljiRaspored();
+    prikaziRaspored();
+  });
+
+  el("ponistiRaspored").addEventListener("click", function () {
+    if (!rasporedEsp) return;
+    nacrt = kopija(rasporedEsp); izmenjeno = false; poslatId = null; poslatTekst = null; izabran = null;
+    el("urednik").style.display = "none";
+    prikaziRaspored();
+  });
+
+  function primiRaspored(t) {
+    var r = parsirajRaspored(t);
+    if (!r) return;
+    rasporedEsp = r;
+    if (poslatId && r.id === poslatId) { poslatId = null; poslatTekst = null; javi(""); }
+    if (!izmenjeno && !poslatId) nacrt = kopija(r);
+    prikaziRaspored();
+  }
+
+  // ---- pozivi iz aplikacije ----
+  window.naVezu = function (s) {
+    var bila = veza;
+    veza = s;
+    if (s === "povezan" && bila !== "povezan") { javiUzivo(); posaljiRaspored(); }
+    prikazi();
+  };
+  window.naPoruku = function (tema, poruka) {
+    poruka = String(poruka).trim();
+    var m = /^ch(\d+)\/state$/.exec(tema), b;
+    if (m) stanje[+m[1]] = poruka;
+    else if (tema === "kada/state") kada = poruka;
+    else if (tema === "kada/rucno") kadaRucno = poruka;
+    else if (tema === "kada/rezim") kadaRezim = poruka;
+    else if (tema === "esp/sat") espSat = poruka;
+    else if (tema === "raspored/aktivni") { primiRaspored(poruka); return; }
+    else if (tema === "raspored/greska") { javi("ESP je odbio raspored: " + poruka); return; }
+    else if (tema === "blokada") blokada = poruka;
+    else if (tema === "reg/rezim") rezim = poruka;
+    else if (tema === "reg/zadata") { b = parseFloat(poruka); zadata = isFinite(b) ? b : null; }
+    else if (tema === "status") esp = poruka;
+    else if (tema === "temp/stanje") tempStanje = poruka;
+    else if (tema === "temp/istorija") { primiIstoriju(poruka); return; }
+    else if (tema === "temp/uzivo") {
+      b = parseFloat(poruka);
+      uzivoKada = performance.now();
+      dodajTacku(isFinite(b) ? b : null);
+      if (isFinite(b)) { temp = b; tempKada = uzivoKada; tempStanje = "ok"; }
+      crtaj();
+    }
+    else if (tema === "temp") {
+      b = parseFloat(poruka);
+      if (isFinite(b)) {
+        temp = b; tempKada = performance.now();
+        if (performance.now() - uzivoKada > 5000) dodajTacku(b);   // kad ne stiže uživo, i ovo ide na grafik
+      }
+    }
+    else if (tema === "internet/mesec") prikaziInternet(poruka);
+    prikazi();
+  };
+
+  el("kada").addEventListener("click", function () {
+    if (kada !== "1" && kada !== "0") return;
+    var cilj = kada === "1" ? "0" : "1";
+    if (!window.PK700 || !PK700.objavi("kada/set", cilj)) { javi("Nema veze sa serverom"); return; }
+    if (cilj === "1" && blokada === "1") javi("Kada će se uključiti kad se završi blokada posle uključivanja ESP-a");
+  });
+  el("vratiRaspored").addEventListener("click", function () {
+    if (!window.PK700 || !PK700.objavi("kada/set", "auto")) javi("Nema veze sa serverom");
+  });
+
+  // potrošnja interneta samo ovog sistema (ESP), poruka je npr. "2026-11 123456"
+  var MESECI = ["januaru", "februaru", "martu", "aprilu", "maju", "junu", "julu", "avgustu", "septembru",
+    "oktobru", "novembru", "decembru"];
+  function prikaziInternet(poruka) {
+    var d = poruka.split(" "), b = parseFloat(d[1]), m = /^\d{4}-(\d\d)$/.exec(d[0]);
+    if (!isFinite(b)) return;
+    var kol = b < 1e6 ? (b / 1e3).toFixed(b < 1e4 ? 1 : 0) + " kB" : (b / 1e6).toFixed(b < 1e8 ? 2 : 1) + " MB";
+    el("internet").textContent = "Internet sistema" + (m ? " u " + MESECI[+m[1] - 1] : "") + ": "
+      + kol.replace(".", ",") + " (procena)";
+  }
+
+  // ---- MQTT 3.1.1 preko WebSocket-a do privatnog servera EMQX, bez spoljnih biblioteka ----
+  var SERVER = "wss://l0ef1e9f.ala.eu-central-1.emqxsl.com:8084/mqtt";
+  var KOREN = "pk700/228d70882a54/";
+  var enk = new TextEncoder(), dek = new TextDecoder();
+  var ws = null, nalog = null, pamti = false, primljeno = new Uint8Array(0), ping = null, ponovo = null, odjavljen = true;
+
+  function duzina(n) { var b = []; do { var x = n % 128; n = Math.floor(n / 128); if (n) x |= 128; b.push(x); } while (n); return b; }
+  function tekstB(s) { var b = enk.encode(s); return [b.length >> 8, b.length & 255].concat(Array.from(b)); }
+  function paket(tip, telo) { return new Uint8Array([tip].concat(duzina(telo.length), telo)); }
+  function salji(p) { if (ws && ws.readyState === 1) { ws.send(p); return true; } return false; }
+  function prijavaVidljiva() { return !el("prijava").classList.contains("skriveno"); }
+
+  function povezi() {
+    clearTimeout(ponovo);
+    if (!nalog) return;
+    odjavljen = false;
+    naVezu("povezujem", "");
+    primljeno = new Uint8Array(0);
+    try {
+      ws = new WebSocket(SERVER, ["mqtt"]);
+    } catch (e) {   // pregledač ne dozvoljava vezu, npr. stranica otvorena iz fajla u nekoj aplikaciji
+      naVezu("greska", "");
+      el("prijavaPoruka").textContent = "Pregledač ne dozvoljava vezu sa serverom (" + e.message
+        + "). Otvori aplikaciju preko linka u Chrome-u.";
+      zakaziPonovo();
+      return;
+    }
+    var ovaj = ws;
+    ws.binaryType = "arraybuffer";
+    // ako za 15 s nema ni veze ni odgovora servera na prijavu, veza se zatvara i pokušava ponovo
+    var rok = setTimeout(function () {
+      if (ovaj === ws && !ovaj.prijavljen) {
+        if (prijavaVidljiva()) el("prijavaPoruka").textContent = "Server ne odgovara 15 s, pokušavam ponovo...";
+        try { ovaj.close(); } catch (e) {}
+      }
+    }, 15000);
+    ws.onopen = function () {   // CONNECT: čista sesija, ime i lozinka, keepalive 30 s
+      if (prijavaVidljiva()) el("prijavaPoruka").textContent = "Veza sa serverom postoji, šaljem prijavu...";
+      var id = "pk700web-" + Math.random().toString(16).slice(2, 10);
+      salji(paket(0x10, tekstB("MQTT").concat([4, 0xC2, 0, 30], tekstB(id), tekstB(nalog.k), tekstB(nalog.l))));
+    };
+    ws.onmessage = function (e) { primi(new Uint8Array(e.data)); };
+    ws.onclose = function (e) {
+      clearTimeout(rok);
+      clearInterval(ping);
+      if (ovaj !== ws) return;   // stara veza
+      ws = null;
+      if (odjavljen) return;
+      naVezu("greska", "");
+      if (prijavaVidljiva()) el("prijavaPoruka").textContent = "Nema veze sa serverom (kod " + e.code
+        + "), pokušavam ponovo za 5 s...";
+      zakaziPonovo();
+    };
+  }
+  function zakaziPonovo() { clearTimeout(ponovo); ponovo = setTimeout(povezi, 5000); }
+
+  // WebSocket poruke mogu da nose deo MQTT paketa ili više njih, pa se skuplja i deli ovde
+  function primi(deo) {
+    var b = new Uint8Array(primljeno.length + deo.length);
+    b.set(primljeno); b.set(deo, primljeno.length); primljeno = b;
+    while (primljeno.length >= 2) {
+      var n = 0, m = 1, i = 1, x;
+      do { if (i >= primljeno.length) return; x = primljeno[i++]; n += (x & 127) * m; m *= 128; } while (x & 128);
+      if (primljeno.length < i + n) return;
+      var tip = primljeno[0], telo = primljeno.slice(i, i + n);
+      primljeno = primljeno.slice(i + n);
+      obradi(tip, telo);
+    }
+  }
+
+  function obradi(tip, telo) {
+    var vrsta = tip >> 4;
+    if (vrsta === 2) {          // CONNACK
+      if (telo[1] === 0) {
+        if (ws) ws.prijavljen = true;
+        prijavaUspela();
+        salji(paket(0x82, [0, 1].concat(tekstB(KOREN + "#"), [0])));   // pretplata na sve teme kade
+        clearInterval(ping);
+        ping = setInterval(function () { salji(new Uint8Array([0xC0, 0])); }, 20000);
+        naVezu("povezan", "");
+      } else {
+        odjavljen = true;
+        if (ws) ws.close();
+        prijavaNeuspela(telo[1] === 4 || telo[1] === 5 ? "Pogrešno korisničko ime ili lozinka" : "Server je odbio vezu, kod " + telo[1]);
+      }
+    } else if (vrsta === 3) {   // PUBLISH
+      var tl = (telo[0] << 8) | telo[1], poz = 2 + tl + ((tip & 6) ? 2 : 0);
+      var tema = dek.decode(telo.slice(2, 2 + tl));
+      if (tema.indexOf(KOREN) !== 0) return;
+      tema = tema.slice(KOREN.length);
+      if (tema === "ui") return;   // izgled za staru Android aplikaciju, ovde ne treba
+      naPoruku(tema, dek.decode(telo.slice(poz)));
+    }
+  }
+
+  // isti objekat koji je davala Android aplikacija, pa ostatak stranice ostaje isti
+  window.PK700 = {
+    objavi: function (podtema, poruka, zadrzi) {
+      if (!podtema || podtema.indexOf("ui") === 0 || /[#+]/.test(podtema)) return false;
+      return salji(paket(zadrzi ? 0x31 : 0x30, tekstB(KOREN + podtema).concat(Array.from(enk.encode(poruka || "")))));
+    },
+    podesavanja: odjava
+  };
+
+  // ---- prijava ----
+  var SKLADISTE = "pk700_nalog";
+  function procitajNalog() { try { var s = localStorage.getItem(SKLADISTE); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+  function sacuvajNalog(n) { try { localStorage.setItem(SKLADISTE, JSON.stringify(n)); } catch (e) {} }
+  function obrisiNalog() { try { localStorage.removeItem(SKLADISTE); } catch (e) {} }
+
+  function prijavaUspela() {
+    el("prijava").classList.add("skriveno");
+    el("prijavaPoruka").textContent = "";
+    if (pamti) sacuvajNalog(nalog);
+  }
+  function prijavaNeuspela(t) {
+    nalog = null;
+    obrisiNalog();
+    el("prijava").classList.remove("skriveno");
+    el("prijavaPoruka").textContent = t;
+  }
+  function odjava() {
+    odjavljen = true;
+    nalog = null;
+    obrisiNalog();
+    clearTimeout(ponovo);
+    if (ws) ws.close();
+    naVezu("povezujem", "");
+    el("pLozinka").value = "";
+    el("prijavaPoruka").textContent = "";
+    el("prijava").classList.remove("skriveno");
+  }
+
+  el("prijavaForma").addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (ws) { odjavljen = true; ws.close(); }
+    nalog = { k: el("pKorisnik").value.trim(), l: el("pLozinka").value };
+    pamti = el("pZapamti").checked;
+    el("prijavaPoruka").textContent = "Povezujem se...";
+    povezi();
+  });
+  el("podesavanja").addEventListener("click", odjava);
+
+  // ---- vreme u Beogradu sa interneta, ne sa sata telefona ----
+  // satBaza je beogradsko vreme zapisano kao UTC, satT0 je performance.now() u tom trenutku,
+  // pa se dalje samo odbrojava, a na svakih 10 min ponovo pita internet
+  var satBaza = null, satT0 = 0, satIzvor = "";
+  var DANI = ["nedelja", "ponedeljak", "utorak", "sreda", "četvrtak", "petak", "subota"];
+
+  function postaviSat(ms, trajanje, izvor) {
+    var prvi = satBaza === null;
+    satBaza = ms + trajanje / 2; satT0 = performance.now(); satIzvor = izvor; prikaziSat();
+    if (prvi) prikaziRaspored();   // kalendar po tačnom datumu
+  }
+
+  function beogradKaoUtc(utcMs) {
+    var p = {};
+    new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Belgrade", hourCycle: "h23", year: "numeric",
+      month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" })
+      .formatToParts(new Date(utcMs)).forEach(function (x) { p[x.type] = +x.value; });
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second, utcMs % 1000);
+  }
+
+  function ucitajVreme() {
+    var t = performance.now();
+    fetch("https://timeapi.io/api/time/current/zone?timeZone=Europe%2FBelgrade", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+      .then(function (v) {
+        postaviSat(Date.UTC(v.year, v.month - 1, v.day, v.hour, v.minute, v.seconds, v.milliSeconds),
+          performance.now() - t, "timeapi.io");
+      })
+      .catch(function () {   // rezerva: Cloudflare daje UTC, pretvara se u beogradsko
+        var t2 = performance.now();
+        return fetch("https://one.one.one.one/cdn-cgi/trace", { cache: "no-store" })
+          .then(function (r) { return r.text(); })
+          .then(function (s) {
+            var m = /ts=([\d.]+)/.exec(s);
+            if (!m) throw 0;
+            postaviSat(beogradKaoUtc(parseFloat(m[1]) * 1000), performance.now() - t2, "cloudflare");
+          });
+      })
+      .catch(function () { if (satBaza === null) el("datum").textContent = "nema vremena sa interneta, ponovo za 30 s"; setTimeout(ucitajVreme, 30000); });
+  }
+
+  function prikaziSat() {
+    if (satBaza === null) return;
+    var d = new Date(satBaza + performance.now() - satT0);
+    el("vreme").textContent = dd(d.getUTCHours()) + ":" + dd(d.getUTCMinutes()) + ":" + dd(d.getUTCSeconds());
+    el("datum").textContent = DANI[d.getUTCDay()] + ", " + d.getUTCDate() + ". " + (d.getUTCMonth() + 1) + ". "
+      + d.getUTCFullYear() + ". (Beograd)";
+  }
+
+  setInterval(prikaziSat, 250);
+  setInterval(ucitajVreme, 10 * 60 * 1000);
+  setInterval(prikaziTemp, 1000);
+  setInterval(crtaj, 1000);
+  setInterval(javiUzivo, 20000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { ucitajVreme(); javiUzivo(); } });
+  ucitajVreme();
+  javiUzivo();
+
+  prikazi();
+  prikaziRaspored();
+  crtaj();
+
+  // zapamćen nalog: prijava odmah, bez ekrana za prijavu
+  var sacuvan = procitajNalog();
+  if (sacuvan && sacuvan.k) {
+    nalog = sacuvan;
+    pamti = true;
+    el("pKorisnik").value = sacuvan.k;
+    el("prijava").classList.add("skriveno");
+    povezi();
+  }
+</script>
+</body>
+</html>

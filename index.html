@@ -169,6 +169,7 @@
   var el = function (id) { return document.getElementById(id); };
   var esp = null, veza = "povezujem", kada = null, kadaRucno = null, kadaRezim = null, espSat = null;
   var blokada = null, rezim = null, zadata = null, stanje = {};
+  var zeljeno = null, zeljenoOd = 0;   // poslata komanda za kadu koju ESP još nije potvrdio
   var temp = null, tempStanje = null, tempKada = null;
 
   function zarez(v) { return v.toFixed(1).replace(".", ","); }
@@ -194,12 +195,14 @@
     el("zadata").textContent = zadata !== null ? "zadato " + zarez(zadata) + " °C" : "zadato --";
     [1, 2, 3, 4].forEach(function (k) { el("r" + k).className = "relej" + (stanje[k] === "1" ? " on" : ""); });
 
-    var d = el("kada");
-    if (kada === "1") { d.textContent = "Isključi kadu"; d.style.background = "var(--crvena)"; }
-    else if (kada === "0") { d.textContent = "Uključi kadu"; d.style.background = "var(--zelena)"; }
+    // dugme pokazuje poslednju poslatu komandu odmah, ne čeka ESP, pa se odmah može pritisnuti ponovo
+    var d = el("kada"), prikaz = zeljeno !== null ? zeljeno : kada;
+    if (prikaz === "1") { d.textContent = "Isključi kadu"; d.style.background = "var(--crvena)"; }
+    else if (prikaz === "0") { d.textContent = "Uključi kadu"; d.style.background = "var(--zelena)"; }
     else { d.textContent = "Čekam stanje kade"; d.style.background = "var(--siva)"; }
     var kr = el("kadaRezim");
-    if (blokada === "1") { kr.textContent = "Blokada posle uključivanja ESP-a, 10 s"; kr.className = "upozorenje"; }
+    if (zeljeno !== null) { kr.textContent = (zeljeno === "1" ? "Uključuje se" : "Isključuje se") + ", čeka potvrdu ESP-a..."; kr.className = "upozorenje"; }
+    else if (blokada === "1") { kr.textContent = "Blokada posle uključivanja ESP-a, 10 s"; kr.className = "upozorenje"; }
     else { kr.textContent = kadaRezim || ""; kr.className = ""; }
     el("vratiRaspored").classList.toggle("skriveno", !(kadaRucno === "1" || kadaRucno === "0"));
     el("espSat").textContent = espSat === "nema" ? "ESP nema tačno vreme" : (espSat ? "sat ESP-a: " + espSat : "");
@@ -368,7 +371,7 @@
     poruka = String(poruka).trim();
     var m = /^ch(\d+)\/state$/.exec(tema), b;
     if (m) stanje[+m[1]] = poruka;
-    else if (tema === "kada/state") kada = poruka;
+    else if (tema === "kada/state") { kada = poruka; if (zeljeno === kada) zeljeno = null; }
     else if (tema === "kada/rucno") kadaRucno = poruka;
     else if (tema === "kada/rezim") kadaRezim = poruka;
     else if (tema === "esp/sat") espSat = poruka;
@@ -378,7 +381,10 @@
     else if (tema === "blokada") blokada = poruka;
     else if (tema === "reg/rezim") rezim = poruka;
     else if (tema === "reg/zadata") { b = parseFloat(poruka); zadata = isFinite(b) ? b : null; }
-    else if (tema === "status") esp = poruka;
+    else if (tema === "status") {
+      if (poruka === "online" && esp !== "online" && zeljeno !== null) PK700.objavi("kada/set", zeljeno);   // ESP se vratio
+      esp = poruka;
+    }
     else if (tema === "temp/stanje") tempStanje = poruka;
     else if (tema === "temp/uzivo" || tema === "temp") {
       b = parseFloat(poruka);
@@ -388,12 +394,24 @@
     prikazi();
   }
 
+  // komanda za kadu: dugme se prebacuje odmah, a komanda se ponavlja kad se ESP vrati na mrežu
+  // (posle isključenja kontaktora ESP ume na kratko da izgubi vezu), dok ne stigne potvrda
   el("kada").addEventListener("click", function () {
-    if (kada !== "1" && kada !== "0") return;
-    var cilj = kada === "1" ? "0" : "1";
+    var trenutno = zeljeno !== null ? zeljeno : kada;
+    if (trenutno !== "1" && trenutno !== "0") return;
+    var cilj = trenutno === "1" ? "0" : "1";
     if (!PK700.objavi("kada/set", cilj)) { javi("Nema veze sa serverom"); return; }
-    javi(cilj === "1" ? "Kada se uključuje do sledeće promene po rasporedu" : "Kada se isključuje do sledeće promene po rasporedu");
+    zeljeno = cilj === kada ? null : cilj;   // vraćeno na stanje koje ESP već ima
+    zeljenoOd = performance.now();
+    prikazi();
   });
+  setInterval(function () {
+    if (zeljeno !== null && performance.now() - zeljenoOd > 90000) {
+      zeljeno = null;
+      javi("ESP nije potvrdio komandu za 90 s, proveri vezu");
+      prikazi();
+    }
+  }, 2000);
   el("vratiRaspored").addEventListener("click", function () {
     if (!PK700.objavi("kada/set", "auto")) javi("Nema veze sa serverom");
   });

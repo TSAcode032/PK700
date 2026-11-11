@@ -110,7 +110,7 @@
 
   <div class="vrh">
     <div class="naslov">PK700</div>
-    <div class="tacke"><span id="sServer" class="tacka ceka">Server</span><span id="sEsp" class="tacka">ESP</span></div>
+    <div class="tacke"><span id="sKonekcija" class="tacka ceka">Konekcija</span></div>
     <button id="odjava" class="link">Odjava</button>
   </div>
 
@@ -185,12 +185,10 @@
   function tacka(id, klasa, tekst) { el(id).className = "tacka " + klasa; el(id).textContent = tekst; }
 
   function prikazi() {
-    if (veza === "povezan") tacka("sServer", "ok", "Server");
-    else if (veza === "greska") tacka("sServer", "lose", "Server greška");
-    else tacka("sServer", "ceka", "Server...");
-    if (esp === "online") tacka("sEsp", "ok", "ESP");
-    else if (esp === "offline") tacka("sEsp", "lose", "ESP van mreže");
-    else tacka("sEsp", "", "ESP ?");
+    // jedna oznaka: zelena samo kad radi i veza sa serverom i ESP
+    if (veza === "povezan" && esp === "online") tacka("sKonekcija", "ok", "Konekcija");
+    else if (veza === "greska" || esp === "offline") tacka("sKonekcija", "lose", "Konekcija");
+    else tacka("sKonekcija", "ceka", "Konekcija");
 
     el("rezim").textContent = rezim ? rezim : "Regulacija: čekam podatak";
     el("zadata").textContent = zadata !== null ? "zadato " + zarez(zadata) + " °C" : "zadato --";

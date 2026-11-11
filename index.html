@@ -188,6 +188,8 @@
 
 <script>
   var el = function (id) { return document.getElementById(id); };
+  // oznaka verzije: kad se na GitHub-u pojavi drugačija, stranica se sama ponovo učita
+  var VERZIJA = "2026-11-11 21:35";
   var esp = null, veza = "povezujem", kada = null, kadaRucno = null, kadaRezim = null, espSat = null;
   var blokada = null, rezim = null, zadata = null, stanje = {};
   var zeljeno = null, zeljenoOd = 0;   // poslata komanda za kadu koju ESP još nije potvrdio
@@ -619,10 +621,27 @@
   });
   el("odjava").addEventListener("click", odjava);
 
+  // GitHub dozvoljava pregledaču da stranicu čuva 10 min, pa se nova verzija proverava zaobilazeći keš
+  function proveriNovuVerziju() {
+    if (location.protocol !== "https:") return;
+    fetch(location.pathname + "?provera=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.text() : ""; })
+      .then(function (t) {
+        var m = /var VERZIJA = "([^"]+)"/.exec(t);
+        var otvorenProzor = ["prozorDan", "prozorNedelja", "prozorZadata"].some(function (id) { return el(id).style.display === "flex"; });
+        var cilj = "?v=" + encodeURIComponent(m ? m[1] : "");
+        // bez ponavljanja ako je ta verzija već tražena, a server još vraća staru
+        if (m && m[1] !== VERZIJA && !izmenjeno && !otvorenProzor && location.search !== cilj) location.replace(location.pathname + cilj);
+      })
+      .catch(function () {});
+  }
+
   setInterval(prikaziTemp, 1000);
   setInterval(javiUzivo, 20000);
+  setInterval(proveriNovuVerziju, 5 * 60 * 1000);
+  setTimeout(proveriNovuVerziju, 3000);
   setInterval(function () { if (!izmenjeno) prikaziRaspored(); }, 60000);   // novi dan u kalendaru posle ponoći
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) { javiUzivo(); prikaziRaspored(); } });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { javiUzivo(); prikaziRaspored(); proveriNovuVerziju(); } });
 
   prikazi();
   prikaziRaspored();
